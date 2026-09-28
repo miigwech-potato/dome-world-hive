@@ -16,7 +16,7 @@ Architectural Principles (Passive Observation Layer):
 __version__ = "0.1.0"
 __author__ = "Dome-World Architects"
 
-from .models import BotState, SpatialLog, Observation
+from .models import BotState, SpatialLog, Observation, SwarmMetrics, SwarmPhase
 from .telemetry import TelemetryStore
 from .github_client import GitHubLandingBoard
 from .cli import main
@@ -25,6 +25,8 @@ __all__ = [
     "BotState",
     "SpatialLog",
     "Observation",
+    "SwarmMetrics",
+    "SwarmPhase",
     "TelemetryStore",
     "GitHubLandingBoard",
     "main",
