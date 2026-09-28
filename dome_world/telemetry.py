@@ -80,8 +80,13 @@ class TelemetryStore:
         return SpatialLog.from_dict(data)
 
     def list_logs(self) -> List[str]:
-        """Return all known log_ids (sorted by filename / creation)."""
+        """Return all known log_ids (sorted by filename, which is NOT time order)."""
         return sorted(p.stem for p in self.logs_dir.glob("*.json"))
+
+    def logs_in_order(self) -> List[SpatialLog]:
+        """Return every SpatialLog sorted by when it was recorded."""
+        logs = [self.read_log(log_id) for log_id in self.list_logs()]
+        return sorted(logs, key=lambda log: log.created_at)
 
     # ------------------------------------------------------------------
     # BotState snapshots (latest-wins)

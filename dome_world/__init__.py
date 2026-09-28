@@ -17,6 +17,7 @@ __version__ = "0.1.0"
 __author__ = "Dome-World Architects"
 
 from .models import BotState, SpatialLog, Observation, SwarmMetrics, SwarmPhase
+from .notation import SwarmReading, read_swarm, bot_glyph
 from .telemetry import TelemetryStore
 from .github_client import GitHubLandingBoard
 from .cli import main
@@ -27,6 +28,9 @@ __all__ = [
     "Observation",
     "SwarmMetrics",
     "SwarmPhase",
+    "SwarmReading",
+    "read_swarm",
+    "bot_glyph",
     "TelemetryStore",
     "GitHubLandingBoard",
     "main",

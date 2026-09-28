@@ -31,6 +31,10 @@ import json
 import math
 import uuid
 
+from .notation import (
+    SwarmReading, bot_glyph, read_swarm, DEFAULT_EPSILON,
+)
+
 
 class SwarmPhase(str, Enum):
     """
@@ -113,6 +117,7 @@ class SwarmMetrics:
     net_flow: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     flow_magnitude: float = 0.0
     kinetic_energy_proxy: float = 0.0
+    reading: Optional[SwarmReading] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -128,7 +133,8 @@ class SwarmMetrics:
                 "net_flow": [round(v, 4) for v in self.net_flow],
                 "flow_magnitude": round(self.flow_magnitude, 4),
                 "kinetic_energy_proxy": round(self.kinetic_energy_proxy, 4),
-                "notation": "net_flow = mean velocity; flow_magnitude = |net_flow|; K = mean(speed^2)",
+                "definitions": "net_flow = mean velocity; flow_magnitude = size of net_flow; K = mean(speed^2)",
+                "glyphs": self.reading.to_dict() if self.reading else None,
             },
         }
 
@@ -156,13 +162,24 @@ class SwarmMetrics:
             "| Symbol | Meaning | Value |",
             "|--------|---------|-------|",
             f"| net_flow | mean velocity vector | ({fx:.3f}, {fy:.3f}, {fz:.3f}) |",
-            f"| flow_magnitude | |net_flow| | {self.flow_magnitude:.3f} |",
+            f"| flow_magnitude | size of net_flow | {self.flow_magnitude:.3f} |",
             f"| K | kinetic_energy_proxy mean(speed^2) | {self.kinetic_energy_proxy:.3f} |",
         ]
+        if self.reading:
+            r = self.reading
+            lines.extend([
+                "",
+                f"**Reading**: {r.notation or '(level movement only)'}  ",
+                f"上 rising: {r.rising}, 下 descending: {r.descending}, "
+                f"𝄐 resting: {r.resting}, level: {r.level}",
+            ])
+            if r.open_question:
+                lines.extend(["", f"**？** {r.open_question}"])
         return "\n".join(lines)
 
     @classmethod
-    def from_bot_states(cls, bot_states: List[BotState]) -> "SwarmMetrics":
+    def from_bot_states(cls, bot_states: List[BotState],
+                        epsilon: float = DEFAULT_EPSILON) -> "SwarmMetrics":
         """Compute SwarmMetrics from BotState snapshots. Pure function."""
         n = len(bot_states)
         if n == 0:
@@ -236,6 +253,7 @@ class SwarmMetrics:
             net_flow=net_flow,
             flow_magnitude=flow_magnitude,
             kinetic_energy_proxy=kinetic_energy_proxy,
+            reading=read_swarm([b.velocity for b in bot_states], epsilon),
         )
 
 
@@ -274,23 +292,9 @@ class SpatialLog:
         data = data.copy()
         data["bot_states"] = [BotState.from_dict(b) for b in data["bot_states"]]
         data["created_at"] = datetime.fromisoformat(data["created_at"])
-        metrics_data = data.pop("metrics", None)
-        if metrics_data and "flow_core" in metrics_data:
-            fc = metrics_data["flow_core"]
-            metrics = SwarmMetrics(
-                bot_count=metrics_data.get("bot_count", 0),
-                centroid=tuple(metrics_data.get("centroid", (0, 0, 0))),
-                dispersion=metrics_data.get("dispersion", 0.0),
-                mean_speed=metrics_data.get("mean_speed", 0.0),
-                max_speed=metrics_data.get("max_speed", 0.0),
-                phase_histogram=metrics_data.get("phase_histogram", {}),
-                influence_overlaps=metrics_data.get("influence_overlaps", 0),
-                isolated_bots=metrics_data.get("isolated_bots", 0),
-                net_flow=tuple(fc.get("net_flow", (0, 0, 0))),
-                flow_magnitude=fc.get("flow_magnitude", 0.0),
-                kinetic_energy_proxy=fc.get("kinetic_energy_proxy", 0.0),
-            )
-            data["metrics"] = metrics
+        # Metrics are derived from bot_states, so they are recomputed on load
+        # rather than trusted from the rounded values stored in the file.
+        data.pop("metrics", None)
         return cls(**data)
 
     def to_markdown(self) -> str:
@@ -301,14 +305,14 @@ class SpatialLog:
             "",
             "#### Bot Swarm Snapshot",
             "",
-            "| Bot ID | Phase | Position (x,y,z) | Velocity | Radius |",
-            "|--------|-------|------------------|----------|--------|",
+            "| Bot ID | Phase | Position (x,y,z) | Velocity | Radius | Flow |",
+            "|--------|-------|------------------|----------|--------|------|",
         ]
         for bot in self.bot_states:
             pos = f"({bot.position[0]:.2f}, {bot.position[1]:.2f}, {bot.position[2]:.2f})"
             vel = f"({bot.velocity[0]:.2f}, {bot.velocity[1]:.2f}, {bot.velocity[2]:.2f})"
             lines.append(
-                f"| `{bot.bot_id[:12]}` | {bot.phase.value} | {pos} | {vel} | {bot.influence_radius:.2f} |"
+                f"| `{bot.bot_id[:12]}` | {bot.phase.value} | {pos} | {vel} | {bot.influence_radius:.2f} | {bot_glyph(bot.velocity)} |"
             )
 
         if self.metrics:

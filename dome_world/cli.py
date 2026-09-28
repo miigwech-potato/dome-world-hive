@@ -26,6 +26,7 @@ from typing import List
 from .models import BotState, SpatialLog, SwarmPhase
 from .telemetry import TelemetryStore
 from .github_client import GitHubLandingBoard
+from .notation import RELEASE, chain, released
 
 logger = logging.getLogger("dome_world")
 
@@ -114,7 +115,7 @@ def cmd_log(args: argparse.Namespace) -> int:
     """Record a new SpatialLog from supplied parameters (or synthetic bots)."""
     store = TelemetryStore(data_dir=args.data_dir)
 
-    if args.bots:
+    if args.bots is not None:
         bots = [_random_bot(f"bot-{i:03d}") for i in range(args.bots)]
     else:
         # Attempt to load existing states
@@ -156,6 +157,42 @@ def cmd_post(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_trace(args: argparse.Namespace) -> int:
+    """
+    Read every SpatialLog in time order and write the movement as one
+    Flow-Core chain. 出 is inserted where the swarm spread outward between
+    two readings.
+    """
+    store = TelemetryStore(data_dir=args.data_dir)
+    logs = [log for log in store.logs_in_order() if log.metrics]
+    if not logs:
+        print("No SpatialLogs with bot states recorded yet.", file=sys.stderr)
+        return 1
+
+    readings: List[str] = []
+    previous = None
+    for log in logs:
+        m = log.metrics
+        if previous is not None and released(previous.dispersion, m.dispersion):
+            readings.append(RELEASE)
+        readings.append(m.reading.notation if m.reading else "")
+        stamp = log.created_at.strftime("%Y-%m-%d %H:%M:%S")
+        print(f"{stamp}  {log.log_id[:8]}  {m.reading.notation or '(level)'}"
+              f"  dispersion {m.dispersion:.3f}")
+        previous = m
+
+    last = logs[-1].metrics
+    print()
+    print("Chain:", chain(readings) or "(no vertical movement recorded)")
+    if last.reading and last.reading.open_question:
+        print("？    :", last.reading.open_question)
+    cx, cy, cz = last.centroid
+    fx, fy, fz = last.net_flow
+    print(f"Next  : if the current flow holds for one time unit, the centroid moves "
+          f"to ({cx + fx:.2f}, {cy + fy:.2f}, {cz + fz:.2f})")
+    return 0
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     """List recorded logs and known bots."""
     store = TelemetryStore(data_dir=args.data_dir)
@@ -183,8 +220,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_demo.add_argument("--bots", type=int, default=3, help="Number of synthetic bots")
     p_demo.add_argument("--post", action="store_true", help="Actually post to GitHub (requires token)")
     p_demo.add_argument("--dry-run", action="store_true", help="Simulate GitHub post without network")
-    p_demo.add_argument("--owner", default="your-org", help="GitHub repository owner")
-    p_demo.add_argument("--repo", default="dome-world", help="GitHub repository name")
+    p_demo.add_argument("--owner", default="miigwech-potato", help="GitHub repository owner")
+    p_demo.add_argument("--repo", default="dome-world-hive", help="GitHub repository name")
     p_demo.add_argument("--issue", type=int, default=1, help="Landing Board issue number")
     p_demo.set_defaults(func=cmd_demo)
 
@@ -199,10 +236,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_post = sub.add_parser("post", help="Post an existing SpatialLog to The Landing Board")
     p_post.add_argument("--log-id", required=True, help="UUID of the SpatialLog to publish")
     p_post.add_argument("--dry-run", action="store_true", help="Simulate the post")
-    p_post.add_argument("--owner", default="your-org")
-    p_post.add_argument("--repo", default="dome-world")
+    p_post.add_argument("--owner", default="miigwech-potato")
+    p_post.add_argument("--repo", default="dome-world-hive")
     p_post.add_argument("--issue", type=int, default=1)
     p_post.set_defaults(func=cmd_post)
+
+    # trace
+    p_trace = sub.add_parser("trace", help="Write all logs as one Flow-Core chain, in time order")
+    p_trace.set_defaults(func=cmd_trace)
 
     # list
     p_list = sub.add_parser("list", help="List known bots and SpatialLogs")
