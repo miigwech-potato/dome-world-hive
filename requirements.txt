@@ -1,0 +1,2 @@
+# Dome-World local utility dependencies
+requests>=2.31.0

@@ -1,0 +1,14 @@
+# Dome-World
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+dome_data/
+.env
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.DS_Store
