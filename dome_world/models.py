@@ -12,6 +12,10 @@ They map directly onto passive architectural principles:
   influence radius). Logs are append-only and never rewrite history,
   reflecting the principle of temporal immutability.
 
+- SwarmMetrics: Derived, read-only aggregates computed from BotState
+  snapshots. Includes movement expressed in Flow-Core notation.
+  Metrics are projections only — never control inputs.
+
 - Observation: A formatted, human-readable record ready for The Landing
   Board. Observations are deliberately passive — they describe what was
   seen, never prescribe action.
@@ -22,8 +26,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import json
+import math
 import uuid
 
 
@@ -64,6 +69,11 @@ class BotState:
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     observation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
+    def speed(self) -> float:
+        """Scalar speed in Flow-Core units."""
+        vx, vy, vz = self.velocity
+        return math.sqrt(vx * vx + vy * vy + vz * vz)
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for structured storage / transmission."""
         data = asdict(self)
@@ -83,22 +93,170 @@ class BotState:
 
 
 @dataclass
+class SwarmMetrics:
+    """
+    Derived swarm-level aggregates computed from a list of BotState snapshots.
+
+    Passive principle: SwarmMetrics are pure projections. They describe
+    collective geometry and motion; they never issue commands or rewrite
+    history. Movement is recorded in Flow-Core notation for continuity
+    with the spatial rule system.
+    """
+    bot_count: int = 0
+    centroid: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    dispersion: float = 0.0
+    mean_speed: float = 0.0
+    max_speed: float = 0.0
+    phase_histogram: Dict[str, int] = field(default_factory=dict)
+    influence_overlaps: int = 0
+    isolated_bots: int = 0
+    net_flow: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    flow_magnitude: float = 0.0
+    kinetic_energy_proxy: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "bot_count": self.bot_count,
+            "centroid": list(self.centroid),
+            "dispersion": round(self.dispersion, 4),
+            "mean_speed": round(self.mean_speed, 4),
+            "max_speed": round(self.max_speed, 4),
+            "phase_histogram": self.phase_histogram,
+            "influence_overlaps": self.influence_overlaps,
+            "isolated_bots": self.isolated_bots,
+            "flow_core": {
+                "net_flow": [round(v, 4) for v in self.net_flow],
+                "flow_magnitude": round(self.flow_magnitude, 4),
+                "kinetic_energy_proxy": round(self.kinetic_energy_proxy, 4),
+                "notation": "net_flow = mean velocity; flow_magnitude = |net_flow|; K = mean(speed^2)",
+            },
+        }
+
+    def to_markdown(self) -> str:
+        """Render metrics as a compact Markdown block for The Landing Board."""
+        cx, cy, cz = self.centroid
+        fx, fy, fz = self.net_flow
+        phase_parts = ", ".join(f"{k}: {v}" for k, v in sorted(self.phase_histogram.items()))
+        lines = [
+            "#### Swarm Metrics",
+            "",
+            "| Metric | Value |",
+            "|--------|-------|",
+            f"| Bot count | {self.bot_count} |",
+            f"| Centroid | ({cx:.2f}, {cy:.2f}, {cz:.2f}) |",
+            f"| Dispersion (RMS) | {self.dispersion:.3f} |",
+            f"| Mean speed | {self.mean_speed:.3f} |",
+            f"| Max speed | {self.max_speed:.3f} |",
+            f"| Influence overlaps | {self.influence_overlaps} |",
+            f"| Isolated bots | {self.isolated_bots} |",
+            f"| Phase histogram | {phase_parts or '-'} |",
+            "",
+            "##### Flow-Core Movement",
+            "",
+            "| Symbol | Meaning | Value |",
+            "|--------|---------|-------|",
+            f"| net_flow | mean velocity vector | ({fx:.3f}, {fy:.3f}, {fz:.3f}) |",
+            f"| flow_magnitude | |net_flow| | {self.flow_magnitude:.3f} |",
+            f"| K | kinetic_energy_proxy mean(speed^2) | {self.kinetic_energy_proxy:.3f} |",
+        ]
+        return "\n".join(lines)
+
+    @classmethod
+    def from_bot_states(cls, bot_states: List[BotState]) -> "SwarmMetrics":
+        """Compute SwarmMetrics from BotState snapshots. Pure function."""
+        n = len(bot_states)
+        if n == 0:
+            return cls()
+
+        cx = sum(b.position[0] for b in bot_states) / n
+        cy = sum(b.position[1] for b in bot_states) / n
+        cz = sum(b.position[2] for b in bot_states) / n
+        centroid = (cx, cy, cz)
+
+        sum_sq = 0.0
+        for b in bot_states:
+            dx = b.position[0] - cx
+            dy = b.position[1] - cy
+            dz = b.position[2] - cz
+            sum_sq += dx * dx + dy * dy + dz * dz
+        dispersion = math.sqrt(sum_sq / n)
+
+        speeds = [b.speed() for b in bot_states]
+        mean_speed = sum(speeds) / n
+        max_speed = max(speeds)
+
+        phase_histogram: Dict[str, int] = {}
+        for b in bot_states:
+            key = b.phase.value
+            phase_histogram[key] = phase_histogram.get(key, 0) + 1
+
+        overlaps = 0
+        for i, a in enumerate(bot_states):
+            for j in range(i + 1, n):
+                b = bot_states[j]
+                dx = a.position[0] - b.position[0]
+                dy = a.position[1] - b.position[1]
+                dz = a.position[2] - b.position[2]
+                dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+                if dist <= (a.influence_radius + b.influence_radius):
+                    overlaps += 1
+
+        isolated = 0
+        for i, a in enumerate(bot_states):
+            connected = False
+            for j, b in enumerate(bot_states):
+                if i == j:
+                    continue
+                dx = a.position[0] - b.position[0]
+                dy = a.position[1] - b.position[1]
+                dz = a.position[2] - b.position[2]
+                dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+                if dist <= (a.influence_radius + b.influence_radius):
+                    connected = True
+                    break
+            if not connected:
+                isolated += 1
+
+        nfx = sum(b.velocity[0] for b in bot_states) / n
+        nfy = sum(b.velocity[1] for b in bot_states) / n
+        nfz = sum(b.velocity[2] for b in bot_states) / n
+        net_flow = (nfx, nfy, nfz)
+        flow_magnitude = math.sqrt(nfx * nfx + nfy * nfy + nfz * nfz)
+        kinetic_energy_proxy = sum(s * s for s in speeds) / n
+
+        return cls(
+            bot_count=n,
+            centroid=centroid,
+            dispersion=dispersion,
+            mean_speed=mean_speed,
+            max_speed=max_speed,
+            phase_histogram=phase_histogram,
+            influence_overlaps=overlaps,
+            isolated_bots=isolated,
+            net_flow=net_flow,
+            flow_magnitude=flow_magnitude,
+            kinetic_energy_proxy=kinetic_energy_proxy,
+        )
+
+
+@dataclass
 class SpatialLog:
     """
     Structured log entry capturing spatial Flow-Core events.
 
-    Flow-Core rules embodied here:
-    1. Locality   – every event is anchored to a concrete coordinate.
-    2. Continuity – velocity & influence imply smooth temporal evolution.
-    3. Non-interference – the log never mutates prior entries; it only
-       appends. This mirrors the passive observer stance of the Landing Board.
+    SwarmMetrics are computed automatically from bot_states at construction.
     """
     event_type: str
     bot_states: List[BotState]
     spatial_context: Dict[str, Any] = field(default_factory=dict)
     notes: str = ""
+    metrics: Optional[SwarmMetrics] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     log_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+    def __post_init__(self) -> None:
+        if self.metrics is None and self.bot_states:
+            self.metrics = SwarmMetrics.from_bot_states(self.bot_states)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -107,6 +265,7 @@ class SpatialLog:
             "bot_states": [b.to_dict() for b in self.bot_states],
             "spatial_context": self.spatial_context,
             "notes": self.notes,
+            "metrics": self.metrics.to_dict() if self.metrics else None,
             "created_at": self.created_at.isoformat(),
         }
 
@@ -115,16 +274,26 @@ class SpatialLog:
         data = data.copy()
         data["bot_states"] = [BotState.from_dict(b) for b in data["bot_states"]]
         data["created_at"] = datetime.fromisoformat(data["created_at"])
+        metrics_data = data.pop("metrics", None)
+        if metrics_data and "flow_core" in metrics_data:
+            fc = metrics_data["flow_core"]
+            metrics = SwarmMetrics(
+                bot_count=metrics_data.get("bot_count", 0),
+                centroid=tuple(metrics_data.get("centroid", (0, 0, 0))),
+                dispersion=metrics_data.get("dispersion", 0.0),
+                mean_speed=metrics_data.get("mean_speed", 0.0),
+                max_speed=metrics_data.get("max_speed", 0.0),
+                phase_histogram=metrics_data.get("phase_histogram", {}),
+                influence_overlaps=metrics_data.get("influence_overlaps", 0),
+                isolated_bots=metrics_data.get("isolated_bots", 0),
+                net_flow=tuple(fc.get("net_flow", (0, 0, 0))),
+                flow_magnitude=fc.get("flow_magnitude", 0.0),
+                kinetic_energy_proxy=fc.get("kinetic_energy_proxy", 0.0),
+            )
+            data["metrics"] = metrics
         return cls(**data)
 
     def to_markdown(self) -> str:
-        """
-        Render a human-readable Markdown observation suitable for
-        The Landing Board.
-
-        The format deliberately emphasizes observation over prescription:
-        timestamps, coordinates, and phase transitions are stated factually.
-        """
         lines = [
             f"### Spatial Log `{self.log_id[:8]}`",
             f"**Event**: `{self.event_type}`  ",
@@ -141,6 +310,11 @@ class SpatialLog:
             lines.append(
                 f"| `{bot.bot_id[:12]}` | {bot.phase.value} | {pos} | {vel} | {bot.influence_radius:.2f} |"
             )
+
+        if self.metrics:
+            lines.append("")
+            lines.append(self.metrics.to_markdown())
+
         if self.notes:
             lines.extend(["", "#### Notes", "", self.notes])
         if self.spatial_context:
@@ -155,13 +329,7 @@ class SpatialLog:
 
 @dataclass
 class Observation:
-    """
-    A ready-to-post Landing Board entry.
-
-    Observations are the final, human-facing artifact of the telemetry
-    pipeline. They inherit the passive stance of SpatialLog and add
-    optional GitHub metadata (issue number, repository, etc.).
-    """
+    """A ready-to-post Landing Board entry."""
     title: str
     body_markdown: str
     source_log_id: Optional[str] = None
